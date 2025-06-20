@@ -87,10 +87,11 @@ function validateItemData(data) {
 }
 
 // Auth middleware
+// Updated protect middleware
 const protect = async (req, res, next) => {
   let token;
 
-  // 1. Check Authorization header
+  // 1. Check Authorization header for Firebase token
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer ")
@@ -98,45 +99,42 @@ const protect = async (req, res, next) => {
     token = req.headers.authorization.split(" ")[1];
 
     try {
-      // Firebase token
       const decoded = await admin.auth().verifyIdToken(token);
-      const { uid, email } = decoded;
+      const user = await usersCollection.findOne({ email: decoded.email });
 
-      const user = await usersCollection.findOne({ email });
-      if (!user) return res.status(404).json({ message: "User not found" });
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
 
       req.user = user;
       return next();
     } catch (err) {
-      console.error("Firebase token invalid:", err.message);
-      return res.status(401).json({ message: "Unauthorized (Firebase)" });
+      console.error("Firebase token verification failed:", err);
+      // Fall through to check for JWT token
     }
   }
 
-  // 2. Fallback to cookie-based JWT
+  // 2. Check cookies for JWT token
   token = req.cookies.token;
-  if (!token)
-    return res.status(401).json({ message: "Unauthorized, no token" });
+  if (!token) {
+    return res.status(401).json({ message: "Not authorized, no token" });
+  }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollection.findOne({
+      $or: [{ _id: new ObjectId(decoded.userId) }, { uid: decoded.uid }],
+    });
 
-    let user;
-    if (decoded.userId) {
-      user = await usersCollection.findOne({
-        _id: new ObjectId(decoded.userId),
-      });
-    } else if (decoded.uid) {
-      user = await usersCollection.findOne({ uid: decoded.uid });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
     }
-
-    if (!user) return res.status(404).json({ message: "User not found" });
 
     req.user = user;
     next();
   } catch (err) {
-    console.error("JWT token invalid:", err.message);
-    return res.status(401).json({ message: "Unauthorized (JWT)" });
+    console.error("JWT token invalid:", err);
+    return res.status(401).json({ message: "Not authorized, token failed" });
   }
 };
 
@@ -169,6 +167,10 @@ app.post("/api/users/register", async (req, res) => {
       email,
       password: hashedPassword,
       uid: null,
+      photoURL: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isAdmin: false,
     };
 
     const result = await usersCollection.insertOne(newUser);
@@ -268,15 +270,6 @@ app.post("/api/users/logout", (req, res) => {
     sameSite: "lax",
   });
   res.json({ message: "Logged out" });
-});
-
-// Profile (protected)
-app.get("/api/users/profile", protect, async (req, res) => {
-  try {
-    res.json(req.user);
-  } catch {
-    res.status(500).json({ message: "Server error" });
-  }
 });
 
 // Add lost/found item (protected)
@@ -487,59 +480,35 @@ app.get("/api/recoveries", protect, async (req, res) => {
   }
 });
 
-// Get user data (protected)
-app.get("/api/users/:id", protect, async (req, res) => {
+// Profile (protected)
+// User Statistics Endpoint
+app.get("/api/users/:userId/stats", protect, async (req, res) => {
   try {
-    const userId = req.params.id;
+    const userId = req.params.userId;
 
-    // First try to find by Firebase UID
-    let user = await usersCollection.findOne({ uid: userId });
-
-    // If not found by UID, try by MongoDB _id
-    if (!user) {
-      try {
-        user = await usersCollection.findOne(
-          { _id: new ObjectId(userId) },
-          { projection: { password: 0 } }
-        );
-      } catch (err) {
-        // Ignore invalid ObjectId errors
-      }
+    // Verify the user is requesting their own stats or is admin
+    if (userId !== req.user._id.toString() && !req.user.isAdmin) {
+      return res.status(403).json({ message: "Unauthorized" });
     }
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
-
-    // Get user's items count
-    const itemsCount = await itemsCollection.countDocuments({
-      $or: [
-        { userId: user._id },
-        { userId: new ObjectId(user._id) }, // Handle both string and ObjectId
-      ],
-    });
-
-    // Get user's recoveries count
-    const recoveriesCount = await recoveriesCollection.countDocuments({
-      $or: [
-        { "recoveredBy.userId": user._id },
-        { "recoveredBy.userId": user._id.toString() },
-        { originalOwner: user.email },
-      ],
-    });
-
-    // Remove sensitive data before sending
-    const { password, ...userData } = user;
+    const [itemsCount, recoveredCount, foundCount] = await Promise.all([
+      itemsCollection.countDocuments({ userId: new ObjectId(userId) }),
+      itemsCollection.countDocuments({
+        userId: new ObjectId(userId),
+        status: "recovered",
+      }),
+      recoveriesCollection.countDocuments({
+        "recoveredBy.userId": new ObjectId(userId),
+      }),
+    ]);
 
     res.json({
-      ...userData,
-      stats: {
-        itemsPosted: itemsCount,
-        recoveries: recoveriesCount,
-      },
+      totalItems: itemsCount,
+      recoveredItems: recoveredCount,
+      foundItems: foundCount,
     });
   } catch (err) {
-    console.error("Error fetching user:", err);
+    console.error("Error fetching user stats:", err);
     res.status(500).json({ message: "Server error" });
   }
 });
