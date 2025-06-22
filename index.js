@@ -421,51 +421,88 @@ app.get("/api/items/user/:userId", protect, async (req, res) => {
 // Report item recovery (protected)
 app.post("/api/items/:id/recover", protect, async (req, res) => {
   try {
-    const { recoveredLocation, recoveredDate, notes } = req.body;
+    const id = req.params.id;
+    let item;
 
-    if (!recoveredLocation || !recoveredDate) {
-      return res.status(400).json({ message: "Missing required fields" });
+    // Try to find the item with both string ID and ObjectId
+    if (ObjectId.isValid(id)) {
+      item = await itemsCollection.findOne({
+        $or: [{ _id: new ObjectId(id) }, { _id: id }],
+      });
+    } else {
+      item = await itemsCollection.findOne({ _id: id });
     }
-
-    // Check if item exists and is active
-    const item = await itemsCollection.findOne({
-      _id: new ObjectId(req.params.id),
-    });
 
     if (!item) {
       return res.status(404).json({ message: "Item not found" });
     }
 
-    if (item.status === "recovered") {
-      return res.status(400).json({ message: "Item already recovered" });
+    const {
+      recoveredLocation,
+      recoveredDate,
+      notes,
+      // Additional item data from payload
+      postType,
+      title,
+      description,
+      category,
+      originalLocation,
+      originalDate,
+      thumbnail,
+      originalOwner,
+      recoveredBy,
+    } = req.body;
+
+    if (!recoveredLocation || !recoveredDate) {
+      return res.status(400).json({ message: "Missing required fields" });
     }
 
-    // Create recovery record
+    // Check if user is trying to recover their own item
+    if (req.user.email === item.contactEmail) {
+      return res
+        .status(400)
+        .json({ message: "You cannot recover your own item" });
+    }
+
+    const recDate = new Date(recoveredDate);
+    if (isNaN(recDate)) {
+      return res.status(400).json({ message: "Invalid recovery date" });
+    }
+
     const recoveryData = {
-      itemId: new ObjectId(req.params.id),
+      itemId: item._id,
       originalPostType: item.postType,
-      originalOwner: item.contactEmail,
+      originalItemData: {
+        title: item.title,
+        description: item.description,
+        category: item.category,
+        location: item.location,
+        date: item.date,
+        thumbnail: item.thumbnail,
+      },
+      originalOwner: {
+        name: item.contactName,
+        email: item.contactEmail,
+      },
       recoveredBy: {
         userId: new ObjectId(req.user._id),
         name: req.user.name,
         email: req.user.email,
+        photoURL: req.user.photoURL || null,
       },
       recoveredLocation,
-      recoveredDate: new Date(recoveredDate),
+      recoveredDate: recDate,
       notes: notes || "",
+      recoveryStatus: "pending", // or "completed" based on your workflow
       createdAt: new Date(),
     };
 
-    // Start transaction
     const session = client.startSession();
     try {
       await session.withTransaction(async () => {
-        // Create recovery record
         await recoveriesCollection.insertOne(recoveryData, { session });
-
-        // Update item status
         await itemsCollection.updateOne(
-          { _id: new ObjectId(req.params.id) },
+          { _id: item._id },
           { $set: { status: "recovered", updatedAt: new Date() } },
           { session }
         );
@@ -474,10 +511,13 @@ app.post("/api/items/:id/recover", protect, async (req, res) => {
       await session.endSession();
     }
 
-    res.json({ message: "Item recovery recorded successfully" });
+    res.json({
+      message: "Item recovery recorded successfully",
+      recovery: recoveryData,
+    });
   } catch (err) {
     console.error("Error recording recovery:", err);
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 });
 
