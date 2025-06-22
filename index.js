@@ -97,24 +97,33 @@ const protect = async (req, res, next) => {
     req.headers.authorization.startsWith("Bearer ")
   ) {
     token = req.headers.authorization.split(" ")[1];
-
     try {
       const decoded = await admin.auth().verifyIdToken(token);
       const user = await usersCollection.findOne({ email: decoded.email });
 
       if (!user) {
-        return res.status(404).json({ message: "User not found" });
+        // Create a new user if not found (optional)
+        const newUser = {
+          name: decoded.name || "Firebase User",
+          email: decoded.email,
+          uid: decoded.uid,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        const result = await usersCollection.insertOne(newUser);
+        req.user = { ...newUser, _id: result.insertedId };
+        return next();
       }
 
       req.user = user;
       return next();
     } catch (err) {
       console.error("Firebase token verification failed:", err);
-      // Fall through to check for JWT token
+      // Continue to check JWT token
     }
   }
 
-  // 2. Check cookies for JWT token
+  // 2. Check cookies for JWT token (existing code)
   token = req.cookies.token;
   if (!token) {
     return res.status(401).json({ message: "Not authorized, no token" });
@@ -146,6 +155,21 @@ const createToken = (userIdOrUid, isUid = false) => {
 };
 
 // === Routes ===
+
+// Add this to your backend server
+app.get("/api/users/profile", protect, async (req, res) => {
+  try {
+    res.json({
+      name: req.user.name,
+      email: req.user.email,
+      uid: req.user.uid || null,
+      isAdmin: req.user.isAdmin || false,
+    });
+  } catch (err) {
+    console.error("Error fetching profile:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
 
 // Register
 app.post("/api/users/register", async (req, res) => {
@@ -318,9 +342,16 @@ app.post("/api/items", protect, async (req, res) => {
 // Get single item (public)
 app.get("/api/items/:id", async (req, res) => {
   try {
-    const item = await itemsCollection.findOne({
-      _id: new ObjectId(req.params.id),
-    });
+    const id = req.params.id;
+    let item;
+
+    if (ObjectId.isValid(id)) {
+      item = await itemsCollection.findOne({
+        $or: [{ _id: new ObjectId(id) }, { _id: id }],
+      });
+    } else {
+      item = await itemsCollection.findOne({ _id: id });
+    }
 
     if (!item) {
       return res.status(404).json({ message: "Item not found" });
