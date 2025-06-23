@@ -418,6 +418,86 @@ app.get("/api/items/user/:userId", protect, async (req, res) => {
   }
 });
 
+app.put("/api/items/:id", protect, async (req, res) => {
+  try {
+    let id = req.params.id;
+
+    // Clean up ID if it has unexpected characters
+    id = id.split(":")[0].trim(); // Remove anything after colon
+
+    let item;
+
+    // First try as ObjectId
+    if (ObjectId.isValid(id)) {
+      item = await itemsCollection.findOne({ _id: new ObjectId(id) });
+    }
+
+    // If not found, try as string ID
+    if (!item) {
+      item = await itemsCollection.findOne({ _id: id });
+    }
+
+    if (!item) {
+      return res.status(404).json({ message: "Item not found" });
+    }
+
+    // Check ownership
+    if (
+      item.userId.toString() !== req.user._id.toString() &&
+      item.contactEmail !== req.user.email
+    ) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    // Validate required fields
+    const requiredFields = [
+      "postType",
+      "title",
+      "description",
+      "category",
+      "location",
+      "date",
+      "status",
+    ];
+    const missingFields = requiredFields.filter((field) => !req.body[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        message: "Missing required fields",
+        fields: missingFields,
+      });
+    }
+
+    // Prepare update
+    const updateData = {
+      ...req.body,
+      date: new Date(req.body.date),
+      updatedAt: new Date(),
+    };
+
+    const result = await itemsCollection.updateOne(
+      { _id: item._id },
+      { $set: updateData }
+    );
+
+    res.json({
+      message: "Item updated successfully",
+      modifiedCount: result.modifiedCount,
+    });
+  } catch (err) {
+    console.error("UPDATE ERROR:", {
+      error: err.message,
+      stack: err.stack,
+      params: req.params,
+      body: req.body,
+      user: req.user,
+    });
+    res.status(500).json({
+      message: "Update failed",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined,
+    });
+  }
+});
+
 // Report item recovery (protected)
 app.post("/api/items/:id/recover", protect, async (req, res) => {
   try {
@@ -548,6 +628,77 @@ app.get("/api/recoveries", protect, async (req, res) => {
   } catch (err) {
     console.error("Error fetching recoveries:", err);
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Get items for the current user (protected)
+// Test this route
+app.get("/api/debug/my-items", protect, async (req, res) => {
+  // Test with hardcoded values that WORKED in your debug data
+  const testConditions = [
+    { userId: "68557943bd0d4d96d87d4525" }, // As string
+    { contactEmail: "mrshanshuvo@gmail.com" }, // Exact match
+  ];
+
+  const items = await itemsCollection.find({ $or: testConditions }).toArray();
+
+  res.send({
+    conditionsUsed: testConditions,
+    itemsFound: items.length,
+    sampleItems: items,
+  });
+});
+
+// Delete item (protected)
+app.delete("/api/items/:id", protect, async (req, res) => {
+  try {
+    const id = req.params.id;
+    let item;
+
+    // Try to find the item with both string ID and ObjectId
+    if (ObjectId.isValid(id)) {
+      item = await itemsCollection.findOne({
+        $or: [{ _id: new ObjectId(id) }, { _id: id }],
+      });
+    } else {
+      item = await itemsCollection.findOne({ _id: id });
+    }
+
+    if (!item) {
+      return res.status(404).json({ message: "Item not found" });
+    }
+
+    // Check if the user owns the item
+    if (
+      item.userId.toString() !== req.user._id.toString() &&
+      item.contactEmail !== req.user.email
+    ) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to delete this item" });
+    }
+
+    // Use a transaction to ensure data consistency
+    const session = client.startSession();
+    try {
+      await session.withTransaction(async () => {
+        // Delete the item
+        await itemsCollection.deleteOne({ _id: item._id }, { session });
+
+        // Delete any associated recoveries
+        await recoveriesCollection.deleteMany(
+          { itemId: item._id },
+          { session }
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    res.json({ message: "Item deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting item:", err);
+    res.status(500).json({ message: "Server error", error: err.message });
   }
 });
 
