@@ -704,23 +704,66 @@ app.delete("/api/items/:id", protect, async (req, res) => {
 
 // Profile (protected)
 // User Statistics Endpoint
+// app.get("/api/users/:userId/stats", protect, async (req, res) => {
+//   try {
+//     const userId = req.params.userId;
+
+//     // Verify the user is requesting their own stats or is admin
+//     if (userId !== req.user._id.toString() && !req.user.isAdmin) {
+//       return res.status(403).json({ message: "Unauthorized" });
+//     }
+
+//     const [itemsCount, recoveredCount, foundCount] = await Promise.all([
+//       itemsCollection.countDocuments({ userId: new ObjectId(userId) }),
+//       itemsCollection.countDocuments({
+//         userId: new ObjectId(userId),
+//         status: "recovered",
+//       }),
+//       recoveriesCollection.countDocuments({
+//         "recoveredBy.userId": new ObjectId(userId),
+//       }),
+//     ]);
+
+//     res.json({
+//       totalItems: itemsCount,
+//       recoveredItems: recoveredCount,
+//       foundItems: foundCount,
+//     });
+//   } catch (err) {
+//     console.error("Error fetching user stats:", err);
+//     res.status(500).json({ message: "Server error" });
+//   }
+// });
+
+// Update your stats endpoint
 app.get("/api/users/:userId/stats", protect, async (req, res) => {
   try {
     const userId = req.params.userId;
 
-    // Verify the user is requesting their own stats or is admin
-    if (userId !== req.user._id.toString() && !req.user.isAdmin) {
+    // Find user by either MongoDB _id or Firebase uid
+    const user = await usersCollection.findOne({
+      $or: [{ _id: new ObjectId(userId) }, { uid: userId }],
+    });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Verify the requesting user has permission
+    if (user._id.toString() !== req.user._id.toString() && !req.user.isAdmin) {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
     const [itemsCount, recoveredCount, foundCount] = await Promise.all([
-      itemsCollection.countDocuments({ userId: new ObjectId(userId) }),
       itemsCollection.countDocuments({
-        userId: new ObjectId(userId),
+        $or: [{ userId: user._id }, { contactEmail: user.email }],
+      }),
+      itemsCollection.countDocuments({
+        $or: [{ userId: user._id }, { contactEmail: user.email }],
         status: "recovered",
       }),
       recoveriesCollection.countDocuments({
-        "recoveredBy.userId": new ObjectId(userId),
+        "recoveredBy.userId": user._id,
       }),
     ]);
 
