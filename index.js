@@ -22,7 +22,7 @@ admin.initializeApp({
 // Middleware
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: ["https://simple-firebase-auth-9089a.web.app"],
     credentials: true,
   })
 );
@@ -34,7 +34,7 @@ const client = new MongoClient(MONGO_URI);
 let db, usersCollection, itemsCollection, recoveriesCollection;
 
 async function connectDB() {
-  await client.connect();
+  // await client.connect();
   db = client.db("whereisit");
   usersCollection = db.collection("users");
   itemsCollection = db.collection("items");
