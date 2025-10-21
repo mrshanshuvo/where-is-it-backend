@@ -1,4 +1,4 @@
-```markdown
+
 # 🕵️‍♂️ WhereIsIt – Backend Server
 
 A **Node.js + Express + MongoDB** backend for the **WhereIsIt** platform — a lost & found item management system with Firebase authentication, JWT-based sessions, and secure CRUD APIs.  
