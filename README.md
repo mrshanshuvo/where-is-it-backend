@@ -237,7 +237,7 @@ Response:
 
 **Shahid Hasan Shuvo**
 📍 Dhaka, Bangladesh
-💼 [GitHub: shahid-hasan-shuvo](https://github.com/shahid-hasan-shuvo)
+💼 [GitHub: shahid-hasan-shuvo](https://github.com/mrshanshuvo)
 📧 [mrshanshuvo@gmail.com](mailto:mrshanshuvo@gmail.com)
 
 ---
